@@ -96,6 +96,39 @@ def sentetik_veri_olustur():
     return df
 
 # ----------------------------
+# 2-b) SENTETİK VERİYİ İNDİRMEYE HAZIRLAMA
+# ----------------------------
+
+def sentetik_veri_csv_hazirla():
+    """
+    150 vatandaşın sentetik verisini Türkçe sütun adlarıyla CSV'ye çevirir.
+    'utf-8-sig' kodlaması dosyanın başına BOM ekler; böylece Excel Türkçe
+    karakterleri (ş, ğ, ı, ö, ü, ç, İ) doğru gösterir.
+    """
+    ham_df = sentetik_veri_olustur()
+
+    indirilecek_df = ham_df[[
+        "vatandas_id", "yas", "cinsiyet", "mahalle",
+        "ulasim", "temizlik", "altyapi", "parklar", "iletisim",
+        "memnuniyet_puani", "yorum"
+    ]].rename(columns={
+        "vatandas_id": "Vatandaş ID",
+        "yas": "Yaş",
+        "cinsiyet": "Cinsiyet",
+        "mahalle": "Mahalle",
+        "ulasim": "Ulaşım Puanı",
+        "temizlik": "Temizlik Puanı",
+        "altyapi": "Altyapı Puanı",
+        "parklar": "Parklar Puanı",
+        "iletisim": "İletişim Puanı",
+        "memnuniyet_puani": "Genel Memnuniyet",
+        "yorum": "Açık Uçlu Yorum"
+    })
+    indirilecek_df["Genel Memnuniyet"] = indirilecek_df["Genel Memnuniyet"].round(2)
+
+    return indirilecek_df.to_csv(index=False, encoding="utf-8-sig")
+
+# ----------------------------
 # 3) YORUM ANALİZİ
 # ----------------------------
 
@@ -103,7 +136,7 @@ def yorumları_analiz_et(df):
     sonuc_df = df.copy()
 
     def duygu_puani_hesapla(yorum):
-        kucuk_yorum = yorum.lower()
+        kucuk_yorum = str(yorum).lower()
         olumlu_sayı = sum(1 for kelime in OLUMLU_KELIMELER if kelime in kucuk_yorum)
         olumsuz_sayı = sum(1 for kelime in OLUMSUZ_KELIMELER if kelime in kucuk_yorum)
         return olumlu_sayı - olumsuz_sayı
@@ -176,12 +209,25 @@ st.caption("Kamu yönetimi öğrencileri için eğitim amaçlı, yorum analizi v
 st.sidebar.header("Ayarlar")
 secenek = st.sidebar.radio("Veri kaynağı", ("Sentetik Veriler Kullan", "CSV Dosyası Yükle"))
 
+# Sentetik veri indirme butonu (veri kaynağı ne olursa olsun her zaman görünür)
+st.sidebar.divider()
+st.sidebar.download_button(
+    label="📥 Sentetik Verileri İndir",
+    data=sentetik_veri_csv_hazirla(),
+    file_name="sentetik_vatandas_anketi_150.csv",
+    mime="text/csv",
+    help="150 vatandaşın yaş, cinsiyet, mahalle, hizmet puanları, genel memnuniyet ve yorumlarını içeren CSV dosyası (Excel uyumlu, UTF-8 BOM)."
+)
+
 if secenek == "CSV Dosyası Yükle":
     uploaded_file = st.sidebar.file_uploader("CSV dosyası yükleyin", type=["csv"])
     if uploaded_file is not None:
         try:
             df = pd.read_csv(uploaded_file)
             csv_dosyasını_doğrula(df)
+            # Yüklenen dosyada genel memnuniyet yoksa hesapla
+            if "memnuniyet_puani" not in df.columns:
+                df["memnuniyet_puani"] = df[HIZMET_KODLARI].mean(axis=1)
             st.sidebar.success("CSV dosyası başarıyla yüklendi.")
         except Exception as e:
             st.error(f"CSV yüklenirken hata oluştu: {e}")
@@ -223,16 +269,30 @@ st.plotly_chart(fig1, use_container_width=True)
 # 2) Grafik: Memnuniyet dağılımı
 st.subheader("Vatandaş Memnuniyet Dağılımı")
 
+SEVIYE_ETIKETLERI = ["Düşük", "Orta", "Yüksek"]
+
 df["memnuniyet_seviye"] = pd.cut(
     df["memnuniyet_puani"],
     bins=[0, 2, 3, 5],
-    labels=["Düşük", "Orta", "Yüksek"]
+    labels=SEVIYE_ETIKETLERI
 )
 
+# DÜZELTME: value_counts().reset_index() sonrası sütun adları pandas sürümüne
+# göre değişir (1.x: "index"/"memnuniyet_seviye", 2.x: "memnuniyet_seviye"/"count").
+# Bu yüzden sütun adlarını kendimiz açıkça belirliyoruz.
+seviye_sayilari = (
+    df["memnuniyet_seviye"]
+    .value_counts()
+    .reindex(SEVIYE_ETIKETLERI, fill_value=0)   # Düşük, Orta, Yüksek sırası sabit
+    .reset_index()
+)
+seviye_sayilari.columns = ["seviye", "kisi_sayisi"]
+seviye_sayilari["seviye"] = seviye_sayilari["seviye"].astype(str)
+
 fig2 = px.pie(
-    df["memnuniyet_seviye"].value_counts().reset_index(),
-    names="index",
-    values="memnuniyet_seviye",
+    seviye_sayilari,
+    names="seviye",
+    values="kisi_sayisi",
     title="Memnuniyet seviyeleri"
 )
 st.plotly_chart(fig2, use_container_width=True)
@@ -254,11 +314,21 @@ st.plotly_chart(fig3, use_container_width=True)
 
 # 4) Örnek yorumlar
 st.subheader("Örnek Yorumlar")
-st.dataframe(df[["vatandas_id", "yorum", "yorum_duygusu"]].head(10), use_container_width=True)
+if "vatandas_id" in df.columns:
+    st.dataframe(df[["vatandas_id", "yorum", "yorum_duygusu"]].head(10), use_container_width=True)
+else:
+    st.dataframe(df[["yorum", "yorum_duygusu"]].head(10), use_container_width=True)
 
 # 5) Öncelik alanları
 st.subheader("Öncelikli İyileştirme Alanları")
-st.dataframe(oncelik_df.rename(columns={"hizmet_adı": "Hizmet Alanı", "ortalama_puan": "Ortalama Puan", "oncelik_durumu": "Öncelik Durumu"}), use_container_width=True)
+st.dataframe(
+    oncelik_df.rename(columns={
+        "hizmet_adı": "Hizmet Alanı",
+        "ortalama_puan": "Ortalama Puan",
+        "oncelik_durumu": "Öncelik Durumu"
+    }),
+    use_container_width=True
+)
 
 # 6) Sonuç indir
 st.subheader("Sonuç İndirme")
@@ -273,6 +343,17 @@ st.download_button(
     data=csv_data,
     file_name="belediye_hizmet_kalitesi_raporu.csv",
     mime="text/csv"
+)
+
+# 7) Sentetik veri indirme (ana sayfada da)
+st.subheader("Sentetik Veri İndirme")
+st.write("150 vatandaşlık örnek anket verisini Excel'de açabileceğiniz CSV olarak indirin.")
+st.download_button(
+    label="📥 Sentetik Verileri İndir",
+    data=sentetik_veri_csv_hazirla(),
+    file_name="sentetik_vatandas_anketi_150.csv",
+    mime="text/csv",
+    key="sentetik_ana_sayfa"
 )
 
 # Son açıklama
